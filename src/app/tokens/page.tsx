@@ -1,3 +1,14 @@
+type TokenData = {
+  id: string;
+  name: string;
+  symbol: string;
+  image: string;
+  price: number;
+  marketCap: number;
+  change: number;
+  volume: number;
+};
+
 function formatMarketCap(value: number) {
   if (value >= 1_000_000_000_000) {
     return `$${(value / 1_000_000_000_000).toFixed(2)}T`;
@@ -14,7 +25,7 @@ function formatMarketCap(value: number) {
   return `$${value.toLocaleString()}`;
 }
 
-async function getTokenData() {
+async function getTokenData(): Promise<TokenData[] | null> {
   try {
     const response = await fetch(
       "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true",
@@ -23,153 +34,194 @@ async function getTokenData() {
       }
     );
 
-    if (!response.ok) {
-      throw new Error("CoinGecko request failed");
-    }
-
     const data = await response.json();
 
-    return data;
+    return [
+      {
+        id: "bitcoin",
+        name: "Bitcoin",
+        symbol: "BTC",
+        image:
+          "https://assets.coingecko.com/coins/images/1/large/bitcoin.png",
+        price: data.bitcoin.usd,
+        marketCap: data.bitcoin.usd_market_cap,
+        change: data.bitcoin.usd_24h_change,
+        volume: data.bitcoin.usd_24h_vol,
+      },
+      {
+        id: "ethereum",
+        name: "Ethereum",
+        symbol: "ETH",
+        image:
+          "https://assets.coingecko.com/coins/images/279/large/ethereum.png",
+        price: data.ethereum.usd,
+        marketCap: data.ethereum.usd_market_cap,
+        change: data.ethereum.usd_24h_change,
+        volume: data.ethereum.usd_24h_vol,
+      },
+      {
+        id: "solana",
+        name: "Solana",
+        symbol: "SOL",
+        image:
+          "https://assets.coingecko.com/coins/images/4128/large/solana.png",
+        price: data.solana.usd,
+        marketCap: data.solana.usd_market_cap,
+        change: data.solana.usd_24h_change,
+        volume: data.solana.usd_24h_vol,
+      },
+    ];
   } catch (error) {
-    console.error("CoinGecko fetch error:", error);
-
+    console.error("Failed to fetch token data:", error);
     return null;
   }
 }
+
 export default async function TokensPage() {
-  const data = await getTokenData();
-
-  if (!data) {
-  return (
-    <main className="min-h-screen bg-slate-950 text-white px-8 py-10">
-      <h1 className="text-4xl font-bold mb-4">
-        Token Analytics
-      </h1>
-
-      <p className="text-red-400">
-        Unable to load live crypto data right now.
-      </p>
-    </main>
-  );
-}
-
-  const tokens = [
-    {
-      id: "bitcoin",
-      name: "Bitcoin",
-      symbol: "BTC",
-      image:
-        "https://assets.coingecko.com/coins/images/1/large/bitcoin.png",
-      price: data.bitcoin.usd,
-      marketCap: data.bitcoin.usd_market_cap,
-      change: data.bitcoin.usd_24h_change,
-      volume: data.bitcoin.usd_24h_vol,
-    },
-    {
-      id: "ethereum",
-      name: "Ethereum",
-      symbol: "ETH",
-      image:
-        "https://assets.coingecko.com/coins/images/279/large/ethereum.png",
-      price: data.ethereum.usd,
-      marketCap: data.ethereum.usd_market_cap,
-      change: data.ethereum.usd_24h_change,
-      volume: data.ethereum.usd_24h_vol,
-    },
-    {
-      id: "solana",
-      name: "Solana",
-      symbol: "SOL",
-      image:
-        "https://assets.coingecko.com/coins/images/4128/large/solana.png",
-      price: data.solana.usd,
-      marketCap: data.solana.usd_market_cap,
-      change: data.solana.usd_24h_change,
-      volume: data.solana.usd_24h_vol,
-    },
-  ];
+  const tokens = await getTokenData();
 
   return (
-    <main className="min-h-screen bg-slate-950 text-white px-8 py-10">
-      <h1 className="text-4xl font-bold mb-2">
-        Token Analytics
-      </h1>
+    <main className="min-h-screen overflow-hidden bg-[#020807] text-white">
+      <div className="relative min-h-screen">
+        {/* Background glow */}
+        <div className="absolute -left-40 -top-40 h-[420px] w-[420px] rounded-full bg-green-500/20 blur-[120px]" />
 
-      <p className="text-gray-400 mb-8">
-        Live crypto prices and market analytics.
-      </p>
+        <div className="absolute -right-40 top-40 h-[420px] w-[420px] rounded-full bg-emerald-500/20 blur-[120px]" />
 
-      <div className="grid gap-5">
-        {tokens.map((token) => (
+        <div className="absolute bottom-0 left-1/2 h-[300px] w-[700px] -translate-x-1/2 rounded-full bg-green-500/10 blur-[100px]" />
+
+        {/* Grid */}
+        <div className="absolute inset-0 opacity-20">
           <div
-            key={token.symbol}
-            className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex items-center justify-between"
-          >
-            {/* TOKEN NAME AND LOGO */}
-            <div className="flex items-center gap-4">
-              <img
-                src={token.image}
-                alt={token.name}
-                className="w-10 h-10"
-              />
+            className="h-full w-full"
+            style={{
+              backgroundImage:
+                "linear-gradient(rgba(34,197,94,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(34,197,94,0.08) 1px, transparent 1px)",
+              backgroundSize: "45px 45px",
+            }}
+          />
+        </div>
 
-              <div>
-                <h2 className="text-xl font-bold">
-                  {token.name}
-                </h2>
+        {/* Navbar */}
+        <nav className="relative z-20 flex items-center justify-center gap-20 border-b border-green-900/40 px-10 py-6 backdrop-blur-md">
+          <h1 className="text-2xl font-bold">
+            Trackr <span className="text-green-400">AI</span>
+          </h1>
 
-                <p className="text-gray-400">
-                  {token.symbol}
-                </p>
-              </div>
-            </div>
+          <div className="flex gap-8 text-gray-300">
+            <a href="/" className="hover:text-green-400">
+              Home
+            </a>
 
-            {/* PRICE AND 24H CHANGE */}
-            <div>
-              <p className="font-semibold">
-                ${token.price.toLocaleString()}
-              </p>
+            <a href="/tokens" className="text-green-400">
+              Tokens
+            </a>
 
-              <p
-                className={
-                  token.change >= 0
-                    ? "text-green-400"
-                    : "text-red-400"
-                }
-              >
-                {token.change.toFixed(2)}%
-              </p>
-            </div>
+            <a href="/fumble" className="hover:text-green-400">
+              Fumble
+            </a>
 
-            {/* MARKET CAP */}
-            <div>
-              <p className="text-gray-400 text-sm">
-                Market Cap
-              </p>
+            <a href="/wallets" className="hover:text-green-400">
+              Wallet Analyzer
+            </a>
 
-              <p className="font-semibold">
-                {formatMarketCap(token.marketCap)}
-              </p>
-            </div>
-
-            {/* 24H VOLUME */}
-            <div>
-              <p className="text-gray-400 text-sm">
-                24h Volume
-              </p>
-
-              <p className="font-semibold">
-                {formatMarketCap(token.volume)}
-              </p>
-            </div>
-            <a
-  href={`/tokens/${token.id}`}
-  className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-semibold"
->
-  View Details
-</a>
+            <a href="/leaderboard" className="hover:text-green-400">
+              Leaderboard
+            </a>
           </div>
-        ))}
+        </nav>
+
+        {/* Content */}
+        <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
+          <div className="mb-12 text-center">
+            <p className="text-sm tracking-[0.35em] text-green-400/70">
+              LIVE MARKET DATA
+            </p>
+
+            <h2 className="mt-3 text-4xl font-extrabold md:text-5xl">
+              Token <span className="text-green-400">Analytics</span>
+            </h2>
+
+            <p className="mt-4 text-gray-400">
+              Live crypto prices, market activity, and token insights.
+            </p>
+          </div>
+
+          {!tokens ? (
+            <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-6 text-center text-red-300">
+              Unable to load live crypto data right now.
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {tokens.map((token) => (
+                <div
+                  key={token.id}
+                  className="group flex flex-col gap-6 rounded-2xl border border-green-500/20 bg-black/40 p-6 backdrop-blur-md transition hover:border-green-400/50 hover:bg-green-500/5 md:flex-row md:items-center md:justify-between"
+                >
+                  <div className="flex items-center gap-4">
+                    <img
+                      src={token.image}
+                      alt={token.name}
+                      className="h-14 w-14"
+                    />
+
+                    <div>
+                      <h3 className="text-2xl font-bold">{token.name}</h3>
+                      <p className="text-gray-400">{token.symbol}</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-2xl font-bold">
+                      ${token.price.toLocaleString()}
+                    </p>
+
+                    <p
+                      className={
+                        token.change >= 0
+                          ? "mt-1 font-semibold text-green-400"
+                          : "mt-1 font-semibold text-red-400"
+                      }
+                    >
+                      {token.change >= 0 ? "+" : ""}
+                      {token.change.toFixed(2)}%
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-gray-400">Market Cap</p>
+                    <p className="mt-1 text-lg font-semibold">
+                      {formatMarketCap(token.marketCap)}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-gray-400">24h Volume</p>
+                    <p className="mt-1 text-lg font-semibold">
+                      {formatMarketCap(token.volume)}
+                    </p>
+                  </div>
+
+                  <a
+                    href={`/tokens/${token.id}`}
+                    className="rounded-xl border border-green-400 bg-green-400 px-5 py-3 text-center font-bold text-black transition hover:bg-green-300"
+                  >
+                    View Details
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Bottom glow */}
+        <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-36 overflow-hidden">
+          <div className="absolute bottom-0 h-px w-full bg-green-400 shadow-[0_0_40px_10px_rgba(34,197,94,0.6)]" />
+
+          <div className="absolute bottom-0 left-0 h-24 w-1/3 rotate-[-5deg] border-t border-green-400/40" />
+
+          <div className="absolute bottom-0 right-0 h-24 w-1/3 rotate-[5deg] border-t border-green-400/40" />
+        </div>
       </div>
     </main>
   );
