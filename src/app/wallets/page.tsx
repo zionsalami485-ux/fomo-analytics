@@ -1,449 +1,914 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+
+/* =========================================================
+   TYPES
+========================================================= */
 
 type WalletToken = {
-  contractAddress: string;
+  contractAddress: string | null;
   name: string;
   symbol: string;
   decimals: number;
   logo: string | null;
   balance: number;
-  rawBalance: string;
+  priceUsd: number;
+  valueUsd: number;
+  network: string;
+  networkName: string;
+  isNative: boolean;
+  isSuspicious?: boolean;
+  suspiciousReason?: string | null;
+};
+
+type ChainGroup = {
+  network: string;
+  name: string;
+  totalValueUsd: number;
+  tokenCount: number;
+  tokens: WalletToken[];
 };
 
 type WalletResult = {
   success: boolean;
   address: string;
-  network: string;
-  balance: number;
-  symbol: string;
+  addressType: "evm" | "solana";
+  totalPortfolioValueUsd: number;
+  chainCount: number;
   tokenCount: number;
+  chains: ChainGroup[];
   tokens: WalletToken[];
+  suspiciousTokenCount?: number;
+  suspiciousTokens?: WalletToken[];
+  partialErrors?: unknown[];
 };
+
+/* =========================================================
+   ADDRESS VALIDATION
+========================================================= */
+
+function isEvmAddress(address: string) {
+  return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
+function isSolanaAddress(address: string) {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+}
+
+/* =========================================================
+   FORMATTERS
+========================================================= */
+
+function formatBalance(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  if (value === 0) return "0";
+
+  if (value >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(2)}B`;
+  }
+
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(2)}M`;
+  }
+
+  if (value >= 100_000) {
+    return value.toLocaleString(undefined, {
+      maximumFractionDigits: 2,
+    });
+  }
+
+  if (value >= 1) {
+    return value.toLocaleString(undefined, {
+      maximumFractionDigits: 10,
+    });
+  }
+
+  if (value >= 0.000001) {
+    return value.toLocaleString(undefined, {
+      maximumFractionDigits: 10,
+    });
+  }
+
+  return value.toExponential(6);
+}
+
+function formatUsd(value: number) {
+  if (!Number.isFinite(value)) return "$0.00";
+
+  if (value > 0 && value < 0.01) {
+    return "< $0.01";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatTokenPrice(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "—";
+  }
+
+  if (value >= 1) {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+  }
+
+  if (value >= 0.01) {
+    return `$${value.toFixed(4)}`;
+  }
+
+  if (value >= 0.000001) {
+    return `$${value.toFixed(8)}`;
+  }
+
+  return `$${value.toExponential(4)}`;
+}
+
+function shortenAddress(address: string) {
+  if (!address) return "";
+
+  if (address.length <= 18) {
+    return address;
+  }
+
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+}
+
+function getChainShortName(network: string) {
+  switch (network) {
+    case "eth-mainnet":
+      return "ETH";
+
+    case "sol-mainnet":
+      return "SOL";
+
+    case "base-mainnet":
+      return "BASE";
+
+    case "arb-mainnet":
+      return "ARB";
+
+    case "opt-mainnet":
+      return "OP";
+
+    case "matic-mainnet":
+    case "polygon-mainnet":
+      return "POL";
+
+    case "bnb-mainnet":
+      return "BNB";
+
+    case "robinhood-mainnet":
+      return "RHC";
+
+    default:
+      return "NET";
+  }
+}
+
+function getTokenLetter(token: WalletToken) {
+  const symbol =
+    token.symbol?.trim() ||
+    token.name?.trim() ||
+    "?";
+
+  return symbol.slice(0, 1).toUpperCase();
+}
+
+/* =========================================================
+   PAGE
+========================================================= */
 
 export default function WalletAnalyzerPage() {
   const [address, setAddress] = useState("");
-  const [message, setMessage] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [walletData, setWalletData] = useState<WalletResult | null>(null);
 
-  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  const [result, setResult] =
+    useState<WalletResult | null>(null);
 
-    const wallet = address.trim();
+  const [loading, setLoading] =
+    useState(false);
 
-    if (!wallet) {
-      setMessage("Enter a wallet address first.");
-      setWalletData(null);
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [statusMessage, setStatusMessage] =
+    useState<string | null>(null);
+
+  const [showSuspicious, setShowSuspicious] =
+    useState(false);
+
+  const autoScanStarted = useRef(false);
+
+  /* =======================================================
+     ANALYZE WALLET
+     Shared by manual search and Holder Intelligence links
+  ======================================================= */
+
+  async function analyzeWallet(walletAddress: string) {
+    const cleanedAddress = walletAddress.trim();
+
+    setError(null);
+    setResult(null);
+    setShowSuspicious(false);
+
+    if (!cleanedAddress) {
+      setError("Enter a wallet address to continue.");
       return;
     }
 
-    const isValidEvmAddress = /^0x[a-fA-F0-9]{40}$/.test(wallet);
+    const evm = isEvmAddress(cleanedAddress);
+    const solana = isSolanaAddress(cleanedAddress);
 
-    if (!isValidEvmAddress) {
-      setMessage("Please enter a valid Ethereum wallet address.");
-      setWalletData(null);
+    if (!evm && !solana) {
+      setError(
+        "Enter a valid EVM or Solana wallet address."
+      );
       return;
+    }
+
+    setAddress(cleanedAddress);
+
+    if (evm) {
+      setStatusMessage(
+        "Scanning wallet across supported EVM chains..."
+      );
+    } else {
+      setStatusMessage(
+        "Scanning Solana wallet..."
+      );
     }
 
     setLoading(true);
-    setMessage("Analyzing wallet...");
-    setWalletData(null);
 
     try {
       const response = await fetch(
-        `/api/wallet?address=${encodeURIComponent(wallet)}`
+        `/api/wallet?address=${encodeURIComponent(
+          cleanedAddress
+        )}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        }
       );
 
       const data = await response.json();
 
       if (!response.ok) {
-        setMessage(data.error || "Unable to analyze wallet.");
-        return;
+        throw new Error(
+          data?.error ||
+            "Unable to analyze this wallet."
+        );
       }
 
-      setWalletData(data);
-      setMessage("Wallet analysis complete.");
-    } catch (error) {
-      console.error("Wallet analysis error:", error);
+      setResult(data);
+    } catch (requestError) {
+      const message =
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to analyze this wallet.";
 
-      setMessage("Something went wrong while analyzing the wallet.");
+      setError(message);
     } finally {
       setLoading(false);
+      setStatusMessage(null);
     }
   }
 
-  function formatBalance(balance: number) {
-    if (balance === 0) {
-      return "0";
-    }
+  /* =======================================================
+     MANUAL SEARCH
+  ======================================================= */
 
-    if (balance < 0.000001) {
-      return balance.toExponential(6);
-    }
-
-    if (balance < 1) {
-      return balance.toLocaleString(undefined, {
-        maximumFractionDigits: 10,
-      });
-    }
-
-    return balance.toLocaleString(undefined, {
-      maximumFractionDigits: 6,
-    });
+  async function handleSubmit(
+    event: FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+    await analyzeWallet(address);
   }
 
-  function shortenAddress(value: string) {
-    return `${value.slice(0, 8)}...${value.slice(-6)}`;
-  }
+  /* =======================================================
+     HOLDER INTELLIGENCE -> WALLET ANALYZER
+  ======================================================= */
+
+  useEffect(() => {
+    if (autoScanStarted.current) {
+      return;
+    }
+
+    const searchParams = new URLSearchParams(
+      window.location.search
+    );
+
+    const incomingAddress = searchParams
+      .get("address")
+      ?.trim();
+
+    if (!incomingAddress) {
+      return;
+    }
+
+    autoScanStarted.current = true;
+    setAddress(incomingAddress);
+    void analyzeWallet(incomingAddress);
+  }, []);
 
   return (
-    <main className="min-h-screen overflow-hidden bg-[#020807] text-white">
-      <div className="relative min-h-screen">
-        {/* Background glows */}
-        <div className="absolute -left-40 -top-40 h-[420px] w-[420px] rounded-full bg-green-500/20 blur-[120px]" />
+    <main className="min-h-screen bg-[#050705] text-white">
+      {/* ===================================================
+          BACKGROUND
+      =================================================== */}
 
-        <div className="absolute -right-40 top-40 h-[420px] w-[420px] rounded-full bg-emerald-500/20 blur-[120px]" />
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(34,197,94,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(34,197,94,0.035)_1px,transparent_1px)] bg-[size:42px_42px]" />
 
-        <div className="absolute bottom-0 left-1/2 h-[300px] w-[700px] -translate-x-1/2 rounded-full bg-green-500/10 blur-[100px]" />
+        <div className="absolute left-1/2 top-[-220px] h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-green-500/[0.035] blur-[120px]" />
+      </div>
 
-        {/* Grid background */}
-        <div className="absolute inset-0 opacity-20">
-          <div
-            className="h-full w-full"
-            style={{
-              backgroundImage:
-                "linear-gradient(rgba(34,197,94,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(34,197,94,0.08) 1px, transparent 1px)",
-              backgroundSize: "45px 45px",
-            }}
-          />
+      {/* ===================================================
+          NAVBAR
+      =================================================== */}
+
+      <header className="relative z-20 border-b border-white/[0.06] bg-black/30 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 lg:px-8">
+          <Link
+            href="/"
+            className="text-xl font-black tracking-tight"
+          >
+            Trackr{" "}
+            <span className="text-green-400">
+              AI
+            </span>
+          </Link>
+
+          <nav className="hidden items-center gap-7 text-sm text-zinc-400 md:flex">
+            <Link
+              href="/"
+              className="transition hover:text-white"
+            >
+              Home
+            </Link>
+
+            <Link
+              href="/tokens"
+              className="transition hover:text-white"
+            >
+              Tokens
+            </Link>
+
+            <Link
+              href="/fumble"
+              className="transition hover:text-white"
+            >
+              Fumble
+            </Link>
+
+            <Link
+              href="/wallets"
+              className="text-green-400"
+            >
+              Wallet Analyzer
+            </Link>
+
+            <Link
+              href="/leaderboard"
+              className="transition hover:text-white"
+            >
+              Holder Intelligence
+            </Link>
+          </nav>
         </div>
+      </header>
 
-        {/* Navbar */}
-        <nav className="relative z-20 flex items-center justify-center gap-20 border-b border-green-900/40 px-10 py-6 backdrop-blur-md">
-          <h1 className="text-2xl font-bold">
-            Trackr <span className="text-green-400">AI</span>
+      {/* ===================================================
+          HERO
+      =================================================== */}
+
+      <section className="relative z-10 mx-auto max-w-7xl px-5 pb-10 pt-16 lg:px-8 lg:pt-24">
+        <div className="mx-auto max-w-3xl text-center">
+          <div className="mb-5 inline-flex rounded-full border border-green-500/20 bg-green-500/[0.06] px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-green-400">
+            Trackr Wallet Intelligence
+          </div>
+
+          <h1 className="text-4xl font-black tracking-[-0.04em] sm:text-5xl lg:text-6xl">
+            Analyze a wallet.
+
+            <span className="block text-green-400">
+              See what it actually holds.
+            </span>
           </h1>
 
-          <div className="flex gap-8 text-gray-300">
-            <a href="/" className="hover:text-green-400">
-              Home
-            </a>
+          <p className="mx-auto mt-6 max-w-2xl text-sm leading-7 text-zinc-400 sm:text-base">
+            Scan EVM wallets across supported
+            networks or analyze Solana wallets for
+            native SOL and SPL token holdings.
+          </p>
+        </div>
 
-            <a href="/tokens" className="hover:text-green-400">
-              Tokens
-            </a>
+        {/* =================================================
+            SEARCH BOX
+        ================================================= */}
 
-            <a href="/fumble" className="hover:text-green-400">
-              Fumble
-            </a>
-
-            <a href="/wallets" className="text-green-400">
-              Wallet Analyzer
-            </a>
-
-            <a href="/leaderboard" className="hover:text-green-400">
-              Leaderboard
-            </a>
-          </div>
-        </nav>
-
-        {/* Main content */}
-        <section className="relative z-10 mx-auto max-w-6xl px-6 py-16">
-          {/* Heading */}
-          <div className="text-center">
-            <p className="text-sm tracking-[0.35em] text-green-400/70">
-              WALLET INTELLIGENCE
-            </p>
-
-            <h2 className="mt-4 text-4xl font-extrabold md:text-6xl">
-              Wallet <span className="text-green-400">Analyzer</span>
-            </h2>
-
-            <p className="mx-auto mt-5 max-w-2xl text-lg text-gray-400">
-              Enter an Ethereum wallet address to explore balances, token
-              holdings, and blockchain insights.
-            </p>
-          </div>
-
-          {/* Search card */}
-          <div className="mx-auto mt-12 max-w-3xl rounded-3xl border border-green-500/30 bg-black/40 p-7 backdrop-blur-md md:p-10">
-            <div className="mb-5">
-              <p className="font-semibold text-white">Wallet Address</p>
-
-              <p className="mt-1 text-sm text-gray-500">
-                Ethereum Mainnet wallets supported.
-              </p>
-            </div>
-
-            <form
-              onSubmit={handleSubmit}
-              className="flex flex-col gap-4 md:flex-row"
-            >
+        <form
+          onSubmit={handleSubmit}
+          className="mx-auto mt-10 max-w-4xl"
+        >
+          <div className="rounded-2xl border border-white/[0.08] bg-[#0b0e0b]/90 p-2 shadow-2xl shadow-black/40 backdrop-blur-xl">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 type="text"
                 value={address}
-                onChange={(e) => {
-                  setAddress(e.target.value);
-                  setMessage("");
-                  setWalletData(null);
-                }}
-                placeholder="0x..."
-                disabled={loading}
-                className="min-w-0 flex-1 rounded-xl border border-green-500/20 bg-[#07100d] px-5 py-4 text-white outline-none transition placeholder:text-gray-600 focus:border-green-400 disabled:cursor-not-allowed disabled:opacity-60"
+                onChange={(event) =>
+                  setAddress(event.target.value)
+                }
+                placeholder="0x... or Solana address"
+                spellCheck={false}
+                autoComplete="off"
+                className="min-w-0 flex-1 rounded-xl border border-transparent bg-black/40 px-5 py-4 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-green-500/30"
               />
 
               <button
                 type="submit"
                 disabled={loading}
-                className="rounded-xl bg-green-400 px-7 py-4 font-bold text-black transition hover:bg-green-300 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl bg-green-400 px-7 py-4 text-sm font-bold text-black transition hover:bg-green-300 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading ? "Analyzing..." : "Analyze Wallet →"}
+                {loading
+                  ? "Analyzing..."
+                  : "Analyze Wallet"}
               </button>
-            </form>
-
-            {message && (
-              <p
-                className={`mt-4 text-sm ${
-                  message === "Wallet analysis complete."
-                    ? "text-green-400"
-                    : message === "Analyzing wallet..."
-                      ? "text-gray-300"
-                      : "text-yellow-300"
-                }`}
-              >
-                {message}
-              </p>
-            )}
-
-            {walletData && (
-              <div className="mt-5 rounded-xl border border-green-500/20 bg-green-500/5 p-4">
-                <p className="text-sm text-gray-400">Ethereum Balance</p>
-
-                <p className="mt-1 text-xl font-bold text-green-400">
-                  {formatBalance(walletData.balance)} {walletData.symbol}
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Summary cards */}
-          <div className="mt-12 grid gap-5 md:grid-cols-3">
-            {/* Native balance */}
-            <div className="rounded-2xl border border-green-500/20 bg-black/30 p-6 backdrop-blur-md">
-              <div className="text-3xl">💰</div>
-
-              <p className="mt-4 text-sm text-gray-400">Native Balance</p>
-
-              <p
-                className={`mt-2 break-words text-2xl font-bold ${
-                  walletData ? "text-green-400" : "text-gray-500"
-                }`}
-              >
-                {walletData
-                  ? `${formatBalance(walletData.balance)} ${walletData.symbol}`
-                  : "—"}
-              </p>
-
-              <p className="mt-3 text-sm text-gray-600">
-                Ethereum Mainnet
-              </p>
-            </div>
-
-            {/* Token holdings */}
-            <div className="rounded-2xl border border-green-500/20 bg-black/30 p-6 backdrop-blur-md">
-              <div className="text-3xl">🪙</div>
-
-              <p className="mt-4 text-sm text-gray-400">Token Holdings</p>
-
-              <p
-                className={`mt-2 text-2xl font-bold ${
-                  walletData ? "text-green-400" : "text-gray-500"
-                }`}
-              >
-                {walletData ? walletData.tokenCount : "—"}
-              </p>
-
-              <p className="mt-3 text-sm text-gray-600">
-                ERC-20 assets with a non-zero balance
-              </p>
-            </div>
-
-            {/* Wallet activity */}
-            <div className="rounded-2xl border border-green-500/20 bg-black/30 p-6 backdrop-blur-md">
-              <div className="text-3xl">📊</div>
-
-              <p className="mt-4 text-sm text-gray-400">Wallet Activity</p>
-
-              <p className="mt-2 text-2xl font-bold text-gray-500">—</p>
-
-              <p className="mt-3 text-sm text-gray-600">
-                Transaction history coming next
-              </p>
             </div>
           </div>
 
-          {/* Token holdings section */}
-          {walletData && walletData.tokens.length > 0 && (
-            <div className="mt-10 rounded-3xl border border-green-500/20 bg-black/30 p-6 backdrop-blur-md md:p-8">
-              <div>
-                <p className="text-sm tracking-[0.3em] text-green-400">
-                  TOKEN HOLDINGS
+          <p className="mt-3 text-center text-xs text-zinc-600">
+            Read-only analysis. Trackr AI never
+            requests your private key or seed phrase.
+          </p>
+        </form>
+
+        {/* =================================================
+            LOADING
+        ================================================= */}
+
+        {loading && (
+          <div className="mx-auto mt-8 max-w-4xl rounded-xl border border-green-500/10 bg-green-500/[0.03] px-5 py-4 text-center text-sm text-green-300">
+            {statusMessage ||
+              "Analyzing wallet..."}
+          </div>
+        )}
+
+        {/* =================================================
+            ERROR
+        ================================================= */}
+
+        {error && (
+          <div className="mx-auto mt-8 max-w-4xl rounded-xl border border-red-500/20 bg-red-500/[0.05] px-5 py-4 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+      </section>
+
+      {/* ===================================================
+          RESULTS
+      =================================================== */}
+
+      {result && (
+        <section className="relative z-10 mx-auto max-w-7xl px-5 pb-24 lg:px-8">
+          {/* =================================================
+              WALLET INFORMATION
+          ================================================= */}
+
+          <div className="mb-6 rounded-2xl border border-white/[0.07] bg-[#0a0d0a]/90 p-5 backdrop-blur-xl">
+            <div className="flex flex-col justify-between gap-5 md:flex-row md:items-center">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+                  Analyzed Wallet
                 </p>
 
-                <h3 className="mt-3 text-2xl font-bold">
-                  Assets inside this wallet
-                </h3>
-
-                <p className="mt-2 text-sm text-gray-500">
-                  Live ERC-20 balances from Ethereum Mainnet.
+                <p className="mt-2 break-all font-mono text-sm text-zinc-300">
+                  {result.address}
                 </p>
+
+                {/* =========================================
+                    DATA SOURCE / SCAN STATUS
+                ========================================= */}
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-zinc-600">
+                  <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1">
+                    Data: Alchemy
+                  </span>
+
+                  <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1">
+                    Market pricing: Alchemy + DexScreener
+                  </span>
+
+                  <span className="rounded-md border border-green-500/10 bg-green-500/[0.03] px-2 py-1 text-green-400">
+                    Live scan
+                  </span>
+                </div>
               </div>
 
-              <div className="mt-6 space-y-4">
-                {walletData.tokens.map((token) => (
-                  <div
-                    key={token.contractAddress}
-                    className="flex flex-col gap-5 rounded-2xl border border-green-500/15 bg-[#07100d] p-5 md:flex-row md:items-center md:justify-between"
+              <div className="w-fit shrink-0 rounded-full border border-green-500/20 bg-green-500/[0.07] px-4 py-2 text-xs font-semibold uppercase tracking-wider text-green-400">
+                {result.addressType === "solana"
+                  ? "Solana Wallet"
+                  : "EVM Wallet"}
+              </div>
+            </div>
+          </div>
+
+          {/* =================================================
+              SUMMARY
+          ================================================= */}
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/[0.07] bg-[#0a0d0a] p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+                Portfolio Value
+              </p>
+
+              <p className="mt-3 text-3xl font-black tracking-tight">
+                {formatUsd(
+                  result.totalPortfolioValueUsd
+                )}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/[0.07] bg-[#0a0d0a] p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+                Networks
+              </p>
+
+              <p className="mt-3 text-3xl font-black tracking-tight">
+                {result.chainCount}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/[0.07] bg-[#0a0d0a] p-6">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+                Assets
+              </p>
+
+              <p className="mt-3 text-3xl font-black tracking-tight">
+                {result.tokenCount}
+              </p>
+            </div>
+          </div>
+
+          {/* =================================================
+              SUSPICIOUS ASSETS NOTICE
+          ================================================= */}
+
+          {!!result.suspiciousTokenCount &&
+            result.suspiciousTokenCount > 0 && (
+              <div className="mt-6 overflow-hidden rounded-2xl border border-amber-400/15 bg-amber-400/[0.035]">
+                <div className="flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <p className="text-sm font-semibold text-amber-200">
+                        Suspicious assets hidden
+                      </p>
+
+                      <span className="rounded-full border border-amber-400/20 bg-amber-400/[0.08] px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                        {result.suspiciousTokenCount}{" "}
+                        hidden
+                      </span>
+                    </div>
+
+                    <p className="mt-2 max-w-3xl text-xs leading-5 text-zinc-500">
+                      These assets contain metadata
+                      patterns commonly associated with
+                      unsolicited claim links, rewards,
+                      vouchers, or promotional spam. They
+                      are excluded from the main portfolio
+                      totals.
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShowSuspicious(
+                        (current) => !current
+                      )
+                    }
+                    className="w-fit shrink-0 rounded-lg border border-white/[0.08] bg-black/30 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:border-amber-400/20 hover:text-white"
                   >
-                    <div className="flex min-w-0 items-center gap-4">
-                      {token.logo ? (
-                        <img
-                          src={token.logo}
-                          alt={`${token.symbol} logo`}
-                          className="h-12 w-12 rounded-full object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-12 w-12 items-center justify-center rounded-full border border-green-500/30 bg-green-500/10 text-lg font-bold text-green-400">
-                          {token.symbol?.slice(0, 1) || "?"}
-                        </div>
-                      )}
+                    {showSuspicious
+                      ? "Hide assets"
+                      : "Review hidden assets"}
+                  </button>
+                </div>
 
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="font-bold text-white">
-                            {token.name}
+                {/* ===========================================
+                    SUSPICIOUS TOKEN LIST
+                =========================================== */}
+
+                {showSuspicious &&
+                  result.suspiciousTokens &&
+                  result.suspiciousTokens.length >
+                    0 && (
+                    <div className="border-t border-amber-400/10 px-5 py-4">
+                      <div className="space-y-3">
+                        {result.suspiciousTokens.map(
+                          (token, index) => (
+                            <div
+                              key={`suspicious-${token.network}-${token.contractAddress}-${index}`}
+                              className="rounded-xl border border-white/[0.05] bg-black/20 p-4"
+                            >
+                              <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                                <div className="flex min-w-0 items-center gap-3">
+                                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-amber-400/15 bg-amber-400/[0.05] text-xs font-bold text-amber-300">
+                                    {getTokenLetter(
+                                      token
+                                    )}
+                                  </div>
+
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-semibold text-zinc-300">
+                                      {token.name}
+                                    </p>
+
+                                    <p className="mt-1 truncate text-xs text-zinc-600">
+                                      {token.symbol}
+                                      {" · "}
+                                      {token.networkName}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="text-left md:text-right">
+                                  <p className="text-xs text-amber-300/80">
+                                    Flagged metadata
+                                  </p>
+
+                                  <p className="mt-1 max-w-xl text-xs leading-5 text-zinc-600">
+                                    {token.suspiciousReason ||
+                                      "Suspicious metadata pattern detected"}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        )}
+                      </div>
+
+                      <p className="mt-4 text-xs leading-5 text-zinc-600">
+                        Trackr AI uses metadata signals
+                        to reduce portfolio spam. A hidden
+                        asset is not automatically proof
+                        that a token is malicious.
+                      </p>
+                    </div>
+                  )}
+              </div>
+            )}
+
+          {/* =================================================
+              CHAINS
+          ================================================= */}
+
+          <div className="mt-8 space-y-6">
+            {result.chains.map((chain) => (
+              <div
+                key={chain.network}
+                className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#090c09]"
+              >
+                {/* ===========================================
+                    CHAIN HEADER
+                =========================================== */}
+
+                <div className="flex flex-col justify-between gap-5 border-b border-white/[0.06] px-5 py-5 sm:flex-row sm:items-center lg:px-6">
+                  <div className="flex items-center gap-4">
+                    <div className="flex h-11 min-w-11 items-center justify-center rounded-xl border border-green-500/15 bg-green-500/[0.055] px-3 text-xs font-black text-green-400">
+                      {getChainShortName(
+                        chain.network
+                      )}
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-600">
+                        Network
+                      </p>
+
+                      <h2 className="mt-1 text-lg font-bold">
+                        {chain.name}
+                      </h2>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-8">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-zinc-600">
+                        Portfolio Value
+                      </p>
+
+                      <p className="mt-1 text-sm font-bold">
+                        {formatUsd(
+                          chain.totalValueUsd
+                        )}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-zinc-600">
+                        Assets
+                      </p>
+
+                      <p className="mt-1 text-sm font-bold">
+                        {chain.tokenCount}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ===========================================
+                    TOKEN LIST
+                =========================================== */}
+
+                <div className="divide-y divide-white/[0.055]">
+                  {chain.tokens.map(
+                    (token, index) => (
+                      <div
+                        key={`${chain.network}-${token.contractAddress ?? "native"}-${index}`}
+                        className="grid gap-5 px-5 py-5 transition hover:bg-white/[0.015] lg:grid-cols-[minmax(0,1.5fr)_minmax(140px,.65fr)_minmax(120px,.55fr)_minmax(120px,.55fr)] lg:items-center lg:px-6"
+                      >
+                        {/* ===================================
+                            TOKEN IDENTITY
+                        =================================== */}
+
+                        <div className="flex min-w-0 items-center gap-4">
+                          {token.logo ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={token.logo}
+                              alt={`${token.symbol} logo`}
+                              className="h-11 w-11 shrink-0 rounded-xl border border-white/[0.07] bg-white/[0.03] object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/[0.07] bg-white/[0.03] text-sm font-black text-zinc-300">
+                              {getTokenLetter(
+                                token
+                              )}
+                            </div>
+                          )}
+
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="truncate font-semibold text-zinc-100">
+                                {token.name}
+                              </p>
+
+                              {token.isNative && (
+                                <span className="rounded-md border border-green-500/15 bg-green-500/[0.05] px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-green-400">
+                                  Native
+                                </span>
+                              )}
+                            </div>
+
+                            <p className="mt-1 text-xs font-medium text-zinc-500">
+                              {token.symbol}
+                            </p>
+
+                            {token.isNative ? (
+                              <p className="mt-2 text-[11px] text-zinc-600">
+                                Native network asset
+                              </p>
+                            ) : token.contractAddress ? (
+                              <p className="mt-2 font-mono text-[11px] text-zinc-600">
+                                {shortenAddress(
+                                  token.contractAddress
+                                )}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {/* ===================================
+                            BALANCE
+                        =================================== */}
+
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-zinc-600">
+                            Balance
                           </p>
 
-                          <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-1 text-xs font-semibold text-green-400">
+                          <p className="mt-2 break-words text-sm font-medium text-zinc-200">
+                            {formatBalance(
+                              token.balance
+                            )}{" "}
                             {token.symbol}
-                          </span>
+                          </p>
                         </div>
 
-                        <p className="mt-1 text-xs text-gray-600">
-                          {shortenAddress(token.contractAddress)}
-                        </p>
+                        {/* ===================================
+                            PRICE
+                        =================================== */}
+
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-zinc-600">
+                            Price
+                          </p>
+
+                          <p className="mt-2 text-sm font-medium text-zinc-200">
+                            {token.priceUsd > 0
+                              ? formatTokenPrice(
+                                  token.priceUsd
+                                )
+                              : "—"}
+                          </p>
+                        </div>
+
+                        {/* ===================================
+                            VALUE
+                        =================================== */}
+
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-zinc-600">
+                            Value
+                          </p>
+
+                          <p className="mt-2 text-sm font-bold text-white">
+                            {token.priceUsd > 0
+                              ? formatUsd(
+                                  token.valueUsd
+                                )
+                              : "—"}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="md:text-right">
-                      <p className="text-xs uppercase tracking-wider text-gray-500">
-                        Balance
-                      </p>
-
-                      <p className="mt-1 text-xl font-bold text-green-400">
-                        {formatBalance(token.balance)} {token.symbol}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+                    )
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
 
-          {/* Empty token state */}
-          {walletData && walletData.tokens.length === 0 && (
-            <div className="mt-10 rounded-3xl border border-green-500/15 bg-black/30 p-8 text-center backdrop-blur-md">
-              <div className="text-4xl">🪙</div>
+          {/* =================================================
+              EMPTY PORTFOLIO
+          ================================================= */}
 
-              <h3 className="mt-4 text-xl font-bold">
-                No ERC-20 holdings detected
-              </h3>
+          {result.chains.length === 0 && (
+            <div className="mt-8 rounded-2xl border border-white/[0.07] bg-[#090c09] px-6 py-14 text-center">
+              <p className="text-lg font-bold">
+                No visible portfolio assets
+              </p>
 
-              <p className="mt-2 text-gray-500">
-                This Ethereum wallet currently has no non-zero ERC-20 balances
-                detected by Trackr AI.
+              <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-zinc-500">
+                Trackr AI did not find normal token
+                balances on the currently supported
+                networks for this wallet.
               </p>
             </div>
           )}
 
-          {/* Wallet details */}
-          {walletData && (
-            <div className="mt-8 rounded-3xl border border-green-500/20 bg-black/30 p-8 backdrop-blur-md">
-              <p className="text-sm tracking-[0.3em] text-green-400">
-                WALLET DETAILS
-              </p>
+          {/* =================================================
+              MULTI-CHAIN INFO
+          ================================================= */}
 
-              <h3 className="mt-3 text-2xl font-bold">Analysis Result</h3>
-
-              <div className="mt-6 space-y-4">
-                <div className="rounded-xl border border-green-500/10 bg-[#07100d] p-4">
-                  <p className="text-sm text-gray-500">Wallet Address</p>
-
-                  <p className="mt-1 break-all text-sm text-gray-300">
-                    {walletData.address}
-                  </p>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="rounded-xl border border-green-500/10 bg-[#07100d] p-4">
-                    <p className="text-sm text-gray-500">Network</p>
-
-                    <p className="mt-1 font-semibold text-white">
-                      {walletData.network || "Ethereum Mainnet"}
-                    </p>
-                  </div>
-
-                  <div className="rounded-xl border border-green-500/10 bg-[#07100d] p-4">
-                    <p className="text-sm text-gray-500">
-                      ERC-20 Holdings
-                    </p>
-
-                    <p className="mt-1 font-semibold text-white">
-                      {walletData.tokenCount}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Future insights */}
-          <div className="mt-12 rounded-3xl border border-green-500/20 bg-green-500/5 p-8">
-            <p className="text-sm tracking-[0.3em] text-green-400">
-              TRACKR WALLET INSIGHTS
+          <div className="mt-10 rounded-2xl border border-green-500/10 bg-green-500/[0.025] p-6 sm:p-8">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400">
+              Trackr Multi-Chain
             </p>
 
-            <h3 className="mt-3 text-2xl font-bold">
-              Understand what&apos;s inside a wallet.
+            <h3 className="mt-3 text-xl font-black">
+              One analyzer. Multiple networks.
             </h3>
 
-            <div className="mt-6 grid gap-4 text-gray-400 md:grid-cols-2">
-              <p className="text-green-300">✓ Native coin balance</p>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
+              Trackr AI supports EVM wallets across
+              multiple chains and Solana wallets with
+              native SOL and SPL token holdings.
+            </p>
 
-              <p className="text-green-300">✓ Token holdings</p>
-
-              <p>○ Portfolio value</p>
-
-              <p>○ Recent transactions</p>
-
-              <p>○ Asset distribution</p>
-
-              <p>○ Wallet activity</p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {[
+                "Ethereum",
+                "Solana",
+                "Base",
+                "Arbitrum",
+                "Optimism",
+                "Polygon",
+                "BNB Chain",
+                "Robinhood Chain",
+              ].map((network) => (
+                <span
+                  key={network}
+                  className="rounded-lg border border-white/[0.06] bg-black/30 px-3 py-2 text-xs text-zinc-400"
+                >
+                  {network}
+                </span>
+              ))}
             </div>
           </div>
         </section>
-
-        {/* Bottom glow */}
-        <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-36 overflow-hidden">
-          <div className="absolute bottom-0 h-px w-full bg-green-400 shadow-[0_0_40px_10px_rgba(34,197,94,0.6)]" />
-
-          <div className="absolute bottom-0 left-0 h-24 w-1/3 rotate-[-5deg] border-t border-green-400/40" />
-
-          <div className="absolute bottom-0 right-0 h-24 w-1/3 rotate-[5deg] border-t border-green-400/40" />
-        </div>
-      </div>
+      )}
     </main>
   );
 }

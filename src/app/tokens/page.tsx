@@ -22,55 +22,64 @@ function formatMarketCap(value: number) {
     return `$${(value / 1_000_000).toFixed(2)}M`;
   }
 
+  if (value >= 1_000) {
+    return `$${(value / 1_000).toFixed(2)}K`;
+  }
+
   return `$${value.toLocaleString()}`;
+}
+
+function formatPrice(value: number) {
+  if (value >= 1) {
+    return `$${value.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+
+  if (value >= 0.01) {
+    return `$${value.toFixed(4)}`;
+  }
+
+  return `$${value.toFixed(8)}`;
 }
 
 async function getTokenData(): Promise<TokenData[] | null> {
   try {
     const response = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true",
+      "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,binancecoin,dogecoin,dogwifhat,cash-cat,pons&order=market_cap_desc&sparkline=false&price_change_percentage=24h",
       {
         cache: "no-store",
       }
     );
 
+    if (!response.ok) {
+      throw new Error("Failed to fetch token data");
+    }
+
     const data = await response.json();
 
-    return [
-      {
-        id: "bitcoin",
-        name: "Bitcoin",
-        symbol: "BTC",
-        image:
-          "https://assets.coingecko.com/coins/images/1/large/bitcoin.png",
-        price: data.bitcoin.usd,
-        marketCap: data.bitcoin.usd_market_cap,
-        change: data.bitcoin.usd_24h_change,
-        volume: data.bitcoin.usd_24h_vol,
-      },
-      {
-        id: "ethereum",
-        name: "Ethereum",
-        symbol: "ETH",
-        image:
-          "https://assets.coingecko.com/coins/images/279/large/ethereum.png",
-        price: data.ethereum.usd,
-        marketCap: data.ethereum.usd_market_cap,
-        change: data.ethereum.usd_24h_change,
-        volume: data.ethereum.usd_24h_vol,
-      },
-      {
-        id: "solana",
-        name: "Solana",
-        symbol: "SOL",
-        image:
-          "https://assets.coingecko.com/coins/images/4128/large/solana.png",
-        price: data.solana.usd,
-        marketCap: data.solana.usd_market_cap,
-        change: data.solana.usd_24h_change,
-        volume: data.solana.usd_24h_vol,
-      },
-    ];
+    return data.map(
+      (token: {
+        id: string;
+        name: string;
+        symbol: string;
+        image: string;
+        current_price: number;
+        market_cap: number;
+        price_change_percentage_24h: number;
+        total_volume: number;
+      }) => ({
+        id: token.id,
+        name: token.name,
+        symbol: token.symbol.toUpperCase(),
+        image: token.image,
+        price: token.current_price ?? 0,
+        marketCap: token.market_cap ?? 0,
+        change: token.price_change_percentage_24h ?? 0,
+        volume: token.total_volume ?? 0,
+      })
+    );
   } catch (error) {
     console.error("Failed to fetch token data:", error);
     return null;
@@ -158,11 +167,11 @@ export default async function TokensPage() {
                   key={token.id}
                   className="group flex flex-col gap-6 rounded-2xl border border-green-500/20 bg-black/40 p-6 backdrop-blur-md transition hover:border-green-400/50 hover:bg-green-500/5 md:flex-row md:items-center md:justify-between"
                 >
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-4 md:w-[220px]">
                     <img
                       src={token.image}
                       alt={token.name}
-                      className="h-14 w-14"
+                      className="h-14 w-14 rounded-full object-cover"
                     />
 
                     <div>
@@ -171,9 +180,11 @@ export default async function TokensPage() {
                     </div>
                   </div>
 
-                  <div>
-                    <p className="text-2xl font-bold">
-                      ${token.price.toLocaleString()}
+                  <div className="md:w-[160px]">
+                    <p className="text-sm text-gray-400">Price</p>
+
+                    <p className="mt-1 text-2xl font-bold">
+                      {formatPrice(token.price)}
                     </p>
 
                     <p
@@ -188,14 +199,14 @@ export default async function TokensPage() {
                     </p>
                   </div>
 
-                  <div>
+                  <div className="md:w-[150px]">
                     <p className="text-sm text-gray-400">Market Cap</p>
                     <p className="mt-1 text-lg font-semibold">
                       {formatMarketCap(token.marketCap)}
                     </p>
                   </div>
 
-                  <div>
+                  <div className="md:w-[150px]">
                     <p className="text-sm text-gray-400">24h Volume</p>
                     <p className="mt-1 text-lg font-semibold">
                       {formatMarketCap(token.volume)}
