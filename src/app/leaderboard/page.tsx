@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 /* =========================================================
@@ -218,18 +218,17 @@ export default function HolderIntelligencePage() {
 
   const [loading, setLoading] = useState(false);
 
+  const restoredFromUrl = useRef(false);
+
   /* =======================================================
-     TOKEN SEARCH
+     TOKEN SEARCH + URL RESTORATION
   ======================================================= */
 
-  async function handleSubmit(
-    event: FormEvent<HTMLFormElement>
+  async function analyzeToken(
+    address: string,
+    updateUrl = true
   ) {
-    event.preventDefault();
-
-    const cleanedAddress = tokenAddress
-      .trim()
-      .toLowerCase();
+    const cleanedAddress = address.trim().toLowerCase();
 
     setError(null);
     setData(null);
@@ -251,8 +250,22 @@ export default function HolderIntelligencePage() {
       return;
     }
 
+    setTokenAddress(cleanedAddress);
     setLoading(true);
     setSearchedToken(cleanedAddress);
+
+    if (updateUrl && typeof window !== "undefined") {
+      const nextUrl =
+        `/leaderboard?token=${encodeURIComponent(
+          cleanedAddress
+        )}`;
+
+      window.history.replaceState(
+        window.history.state,
+        "",
+        nextUrl
+      );
+    }
 
     try {
       const response = await fetch(
@@ -286,6 +299,48 @@ export default function HolderIntelligencePage() {
       setLoading(false);
     }
   }
+
+  async function handleSubmit(
+    event: FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+    await analyzeToken(tokenAddress, true);
+  }
+
+  useEffect(() => {
+    if (restoredFromUrl.current) {
+      return;
+    }
+
+    restoredFromUrl.current = true;
+
+    const params = new URLSearchParams(
+      window.location.search
+    );
+
+    const tokenFromUrl = params.get("token");
+
+    if (!tokenFromUrl) {
+      return;
+    }
+
+    const cleanedAddress = tokenFromUrl
+      .trim()
+      .toLowerCase();
+
+    if (!isEvmAddress(cleanedAddress)) {
+      setTokenAddress(tokenFromUrl);
+      setError(
+        "The token address in this URL is not a valid EVM contract address."
+      );
+      return;
+    }
+
+    void analyzeToken(cleanedAddress, false);
+    // Run once on mount. The ref prevents React Strict Mode
+    // from triggering a duplicate restoration request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const intelligence = data?.intelligence;
   const token = data?.token;
