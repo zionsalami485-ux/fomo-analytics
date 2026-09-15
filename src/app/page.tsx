@@ -22,33 +22,36 @@ export default function Home() {
         </div>
 
         {/* Navbar */}
-        <nav className="relative z-20 flex items-center justify-center gap-20 border-b border-green-900/40 px-10 py-6 backdrop-blur-md">
-          <h1 className="text-2xl font-bold">
-            Trackr <span className="text-green-400">AI</span>
-          </h1>
+<nav className="relative z-20 flex flex-col items-center justify-center gap-4 border-b border-green-900/40 px-4 py-5 backdrop-blur-md md:flex-row md:gap-10 lg:gap-20 lg:px-10">
+  <h1 className="text-2xl font-bold whitespace-nowrap">
+    Trackr <span className="text-green-400">AI</span>
+  </h1>
 
-          <div className="flex gap-8 text-gray-300">
-            <a href="/" className="hover:text-green-400">
-              Home
-            </a>
+  <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-3 text-sm text-gray-300 sm:text-base md:gap-x-7">
+    <a href="/" className="whitespace-nowrap hover:text-green-400">
+      Home
+    </a>
 
-            <a href="/tokens" className="hover:text-green-400">
-              Tokens
-            </a>
+    <a href="/tokens" className="whitespace-nowrap hover:text-green-400">
+      Tokens
+    </a>
 
-            <a href="/fumble" className="hover:text-green-400">
-              Fumble
-            </a>
+    <a href="/fumble" className="whitespace-nowrap hover:text-green-400">
+      Fumble
+    </a>
 
-            <a href="/wallets" className="hover:text-green-400">
-              Wallet Analyzer
-            </a>
+    <a href="/wallets" className="whitespace-nowrap hover:text-green-400">
+      Wallet Analyzer
+    </a>
 
-            <a href="/leaderboard" className="hover:text-green-400">
-              Leaderboard
-            </a>
-          </div>
-        </nav>
+    <a
+      href="/leaderboard"
+      className="whitespace-nowrap hover:text-green-400"
+    >
+      Holder Intelligence
+    </a>
+  </div>
+</nav>
 
         {/* Floating Bitcoin card */}
         <div className="absolute left-10 top-56 hidden rotate-[-6deg] rounded-2xl border border-green-500/30 bg-black/40 p-6 backdrop-blur-md lg:block">
