@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 
 /* =========================================================
@@ -207,6 +207,10 @@ export default function WalletAnalyzerPage() {
   const [showSuspicious, setShowSuspicious] =
     useState(false);
 
+  const [tokenSearch, setTokenSearch] = useState("");
+  const [chainFilter, setChainFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("value-desc");
+
   const autoScanStarted = useRef(false);
 
   /* =======================================================
@@ -320,6 +324,47 @@ export default function WalletAnalyzerPage() {
     setAddress(incomingAddress);
     void analyzeWallet(incomingAddress);
   }, []);
+
+  const availableChains = useMemo(() => result?.chains ?? [], [result]);
+
+  const filteredChains = useMemo(() => {
+    if (!result) return [];
+
+    const query = tokenSearch.trim().toLowerCase();
+
+    return result.chains
+      .filter((chain) => chainFilter === "all" || chain.network === chainFilter)
+      .map((chain) => {
+        const tokens = chain.tokens
+          .filter((token) => {
+            if (!query) return true;
+
+            return (
+              token.name.toLowerCase().includes(query) ||
+              token.symbol.toLowerCase().includes(query) ||
+              (token.contractAddress ?? "").toLowerCase().includes(query)
+            );
+          })
+          .sort((a, b) => {
+            switch (sortBy) {
+              case "value-asc":
+                return a.valueUsd - b.valueUsd;
+              case "balance-desc":
+                return b.balance - a.balance;
+              case "balance-asc":
+                return a.balance - b.balance;
+              case "name-asc":
+                return a.name.localeCompare(b.name);
+              case "value-desc":
+              default:
+                return b.valueUsd - a.valueUsd;
+            }
+          });
+
+        return { ...chain, tokens };
+      })
+      .filter((chain) => chain.tokens.length > 0);
+  }, [result, tokenSearch, chainFilter, sortBy]);
 
   return (
     <main className="min-h-screen bg-[#050705] text-white">
@@ -496,23 +541,6 @@ export default function WalletAnalyzerPage() {
                   {result.address}
                 </p>
 
-                {/* =========================================
-                    DATA SOURCE / SCAN STATUS
-                ========================================= */}
-
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-zinc-600">
-                  <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1">
-                    Data: Alchemy
-                  </span>
-
-                  <span className="rounded-md border border-white/[0.06] bg-white/[0.02] px-2 py-1">
-                    Market pricing: Alchemy + DexScreener
-                  </span>
-
-                  <span className="rounded-md border border-green-500/10 bg-green-500/[0.03] px-2 py-1 text-green-400">
-                    Live scan
-                  </span>
-                </div>
               </div>
 
               <div className="w-fit shrink-0 rounded-full border border-green-500/20 bg-green-500/[0.07] px-4 py-2 text-xs font-semibold uppercase tracking-wider text-green-400">
@@ -671,11 +699,52 @@ export default function WalletAnalyzerPage() {
             )}
 
           {/* =================================================
+              PORTFOLIO CONTROLS
+          ================================================= */}
+
+          <div className="mt-8 rounded-2xl border border-white/[0.07] bg-[#0a0d0a] p-4 sm:p-5">
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px_220px]">
+              <input
+                type="text"
+                value={tokenSearch}
+                onChange={(event) => setTokenSearch(event.target.value)}
+                placeholder="Search token name, symbol, or contract"
+                className="min-w-0 rounded-xl border border-white/[0.07] bg-black/30 px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-green-500/30"
+              />
+
+              <select
+                value={chainFilter}
+                onChange={(event) => setChainFilter(event.target.value)}
+                className="rounded-xl border border-white/[0.07] bg-black/30 px-4 py-3 text-sm text-zinc-300 outline-none transition focus:border-green-500/30"
+              >
+                <option value="all">All chains</option>
+                {availableChains.map((chain) => (
+                  <option key={chain.network} value={chain.network}>
+                    {chain.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value)}
+                className="rounded-xl border border-white/[0.07] bg-black/30 px-4 py-3 text-sm text-zinc-300 outline-none transition focus:border-green-500/30"
+              >
+                <option value="value-desc">Value: high to low</option>
+                <option value="value-asc">Value: low to high</option>
+                <option value="balance-desc">Amount: high to low</option>
+                <option value="balance-asc">Amount: low to high</option>
+                <option value="name-asc">Token: A to Z</option>
+              </select>
+            </div>
+          </div>
+
+          {/* =================================================
               CHAINS
           ================================================= */}
 
-          <div className="mt-8 space-y-6">
-            {result.chains.map((chain) => (
+          <div className="mt-6 space-y-6">
+            {filteredChains.map((chain) => (
               <div
                 key={chain.network}
                 className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[#090c09]"
@@ -711,7 +780,10 @@ export default function WalletAnalyzerPage() {
 
                       <p className="mt-1 text-sm font-bold">
                         {formatUsd(
-                          chain.totalValueUsd
+                          chain.tokens.reduce(
+                            (total, token) => total + token.valueUsd,
+                            0
+                          )
                         )}
                       </p>
                     </div>
@@ -722,7 +794,7 @@ export default function WalletAnalyzerPage() {
                       </p>
 
                       <p className="mt-1 text-sm font-bold">
-                        {chain.tokenCount}
+                        {chain.tokens.length}
                       </p>
                     </div>
                   </div>
@@ -849,6 +921,15 @@ export default function WalletAnalyzerPage() {
               </div>
             ))}
           </div>
+
+          {result.chains.length > 0 && filteredChains.length === 0 && (
+            <div className="mt-6 rounded-2xl border border-white/[0.07] bg-[#090c09] px-6 py-12 text-center">
+              <p className="text-lg font-bold">No matching assets</p>
+              <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-zinc-500">
+                Try another token search or select a different chain.
+              </p>
+            </div>
+          )}
 
           {/* =================================================
               EMPTY PORTFOLIO
